@@ -40,6 +40,8 @@
 #include "hw/char/serial-mm.h"
 #include "hw/sd/allwinner-sdhost.h"
 #include "hw/sd/sd.h"
+#include "hw/net/allwinner-sun8i-emac.h"
+#include "net/net.h"
 #include "system/system.h"
 #include "system/blockdev.h"
 #include "system/block-backend.h"
@@ -244,6 +246,34 @@ static void h616_create_mmc(MachineState *machine, DeviceState *gic,
     }
 }
 
+/*
+ * Ethernet: the H616 "gmac1" (eth@0x05030000, IRQ SPI 15, RMII, status=okay in
+ * the vendor DTB) is Allwinner's sun8i EMAC -- the same IP QEMU models as
+ * TYPE_AW_SUN8I_EMAC. The board is headless (no serial getty); networking is
+ * how the vendor userspace (dropbear SSH, the uhttpd/luci web UI) is reached, so
+ * we model it and pair it with a -nic. gmac0 (0x05020000) stays disabled (as in
+ * the DTB). The EMAC's PHY-select/delay live in a syscon register at
+ * 0x03000030+; QEMU's EMAC model doesn't use it, so a plain RW bank suffices
+ * (see h616_create_pio, reused for 0x03000000).
+ */
+#define H616_EMAC1_BASE 0x05030000
+#define H616_EMAC1_IRQ  15           /* GIC SPI 15 (DT: interrupts = <0 15 4>) */
+
+static void h616_create_emac(MachineState *machine, DeviceState *gic,
+                             MemoryRegion *sysmem)
+{
+    DeviceState *emac = qdev_new(TYPE_AW_SUN8I_EMAC);
+
+    object_property_add_child(OBJECT(machine), "emac1", OBJECT(emac));
+    qemu_configure_nic_device(emac, true, NULL);
+    object_property_set_link(OBJECT(emac), "dma-memory", OBJECT(sysmem),
+                             &error_fatal);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(emac), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(emac), 0, H616_EMAC1_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(emac), 0,
+                       qdev_get_gpio_in(gic, H616_EMAC1_IRQ));
+}
+
 static DeviceState *h616_create_gic(MachineState *ms, MemoryRegion *sysmem)
 {
     unsigned int smp_cpus = ms->smp.cpus;
@@ -307,7 +337,8 @@ static const char * const h616_disable_kw[] = {
     "ehci", "ohci", "otg", "usbstandby", /* USB */
     "-spi",                 /* SPI (won't match "hwspinlock") */
     "hwspinlock",
-    "gmac", "emac",         /* ethernet */
+    /* NB: ethernet (gmac) is left enabled — we model gmac1 (sun8i EMAC) at
+     * 0x05030000; gmac0 is already status=disabled in the vendor DTB. */
 };
 
 static void h616_modify_dtb(const struct arm_boot_info *info, void *fdt)
@@ -409,10 +440,12 @@ static void whatsminer_h616_init(MachineState *machine)
     /* PIO / R_PIO register banks (pinctrl mux read-back must be coherent). */
     h616_create_pio(sysmem, 0x0300b000);   /* CPUX PIO  (ports PC..PI) */
     h616_create_pio(sysmem, 0x07022000);   /* R_PIO     (ports PL..PM) */
+    h616_create_pio(sysmem, 0x03000000);   /* system-control / EMAC clk reg */
 
     gic = h616_create_gic(machine, sysmem);
     h616_create_uart(gic, sysmem);
     h616_create_mmc(machine, gic, sysmem);
+    h616_create_emac(machine, gic, sysmem);
 
     /* Boot the vendor kernel with the vendor DTB; QEMU emulates PSCI. */
     h616_binfo.ram_size = machine->ram_size;

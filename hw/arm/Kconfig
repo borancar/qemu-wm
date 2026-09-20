@@ -742,5 +742,6 @@ config WHATSMINER_H616
     select ARM_TIMER         # architected timer
     select SERIAL_MM         # Allwinner sun50i-uart (16550 + DesignWare USR)
     select ALLWINNER_SDHOST  # SD/MMC controller
+    select ALLWINNER_SUN8I_EMAC  # gmac1 ethernet
     select SD                # SD card
     select DEVICE_TREE       # boots the vendor -dtb
