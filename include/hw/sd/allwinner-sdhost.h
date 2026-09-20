@@ -44,6 +44,9 @@
 /** Allwinner sun50i-a64 emmc */
 #define TYPE_AW_SDHOST_SUN50I_A64_EMMC  TYPE_AW_SDHOST "-sun50i-a64-emmc"
 
+/** Allwinner sun50iw9 / H616 (word-addressed IDMAC descriptors) */
+#define TYPE_AW_SDHOST_SUN50I_H616 TYPE_AW_SDHOST "-sun50i-h616"
+
 /** @} */
 
 /**
@@ -141,6 +144,14 @@ struct AwSdHostClass {
 
     /** does the IP block support autocalibration? */
     bool can_calibrate;
+
+    /**
+     * Right-shift applied by the driver to the IDMAC descriptor buffer
+     * address (word addressing). 0 for byte-addressed descriptors
+     * (sun4i..a64); 2 for the sun50iw9/H616 generation, which stores
+     * addr >> 2.
+     */
+    uint32_t desc_addr_shift;
 };
 
 #endif /* HW_SD_ALLWINNER_SDHOST_H */

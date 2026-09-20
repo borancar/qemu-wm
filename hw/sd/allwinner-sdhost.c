@@ -94,6 +94,10 @@ enum {
 };
 
 enum {
+    SD_DMAC_SOFT_RST        = (1 << 0),  /* IDMAC soft reset (self-clearing) */
+};
+
+enum {
     SD_CMDR_LOAD            = (1 << 31),
     SD_CMDR_CLKCHANGE       = (1 << 21),
     SD_CMDR_WRITE           = (1 << 10),
@@ -358,18 +362,24 @@ static uint32_t allwinner_sdhost_process_desc(AwSdHostState *s,
             buf_bytes = sizeof(buf);
         }
 
+        /*
+         * The descriptor buffer address is byte-addressed on sun4i..a64,
+         * but the sun50iw9/H616 IDMAC stores it word-addressed (driver
+         * writes phys >> 2), so shift it back to a byte address here.
+         */
+        hwaddr buf_addr = ((hwaddr)(desc->addr & DESC_SIZE_MASK)
+                           << klass->desc_addr_shift) + num_done;
+
         /* Write to SD bus */
         if (is_write) {
-            dma_memory_read(&s->dma_as,
-                            (desc->addr & DESC_SIZE_MASK) + num_done, buf,
+            dma_memory_read(&s->dma_as, buf_addr, buf,
                             buf_bytes, MEMTXATTRS_UNSPECIFIED);
             sdbus_write_data(&s->sdbus, buf, buf_bytes);
 
         /* Read from SD bus */
         } else {
             sdbus_read_data(&s->sdbus, buf, buf_bytes);
-            dma_memory_write(&s->dma_as,
-                             (desc->addr & DESC_SIZE_MASK) + num_done, buf,
+            dma_memory_write(&s->dma_as, buf_addr, buf,
                              buf_bytes, MEMTXATTRS_UNSPECIFIED);
         }
         num_done += buf_bytes;
@@ -384,8 +394,14 @@ static uint32_t allwinner_sdhost_process_desc(AwSdHostState *s,
 
 static void allwinner_sdhost_dma(AwSdHostState *s)
 {
+    AwSdHostClass *klass = AW_SDHOST_GET_CLASS(s);
     TransferDescriptor desc;
-    hwaddr desc_addr = s->desc_base;
+    /*
+     * REG_DLBA and descriptor "next" pointers are word-addressed on the
+     * sun50iw9/H616 generation (driver stores phys >> 2), byte-addressed
+     * elsewhere; shift back to a byte address.
+     */
+    hwaddr desc_addr = (hwaddr)s->desc_base << klass->desc_addr_shift;
     bool is_write = (s->command & SD_CMDR_WRITE);
     uint32_t bytes_done = 0;
 
@@ -418,7 +434,7 @@ static void allwinner_sdhost_dma(AwSdHostState *s)
         if (desc.status & DESC_STATUS_LAST) {
             break;
         } else {
-            desc_addr = desc.next;
+            desc_addr = (hwaddr)desc.next << klass->desc_addr_shift;
         }
     }
 
@@ -699,7 +715,10 @@ static void allwinner_sdhost_write(void *opaque, hwaddr offset,
         s->hardware_rst = value;
         break;
     case REG_SD_DMAC:      /* Internal DMA Controller Control */
-        s->dmac = value;
+        /* The IDMAC soft-reset bit self-clears once reset completes; real
+         * hardware clears it immediately. Drivers (e.g. sunxi-mmc) set it
+         * and poll for it to clear, so never latch it. */
+        s->dmac = value & ~SD_DMAC_SOFT_RST;
         allwinner_sdhost_update_irq(s);
         break;
     case REG_SD_DLBA:      /* Descriptor List Base Address */
@@ -939,6 +958,17 @@ static void allwinner_sdhost_sun50i_a64_emmc_class_init(ObjectClass *klass,
     sc->can_calibrate = true;
 }
 
+static void allwinner_sdhost_sun50i_h616_class_init(ObjectClass *klass,
+                                                    const void *data)
+{
+    AwSdHostClass *sc = AW_SDHOST_CLASS(klass);
+    sc->max_desc_size = 64 * KiB;
+    sc->is_sun4i = false;
+    sc->can_calibrate = true;
+    /* sun50iw9/H616 IDMAC descriptors are word-addressed (addr >> 2). */
+    sc->desc_addr_shift = 2;
+}
+
 static const TypeInfo allwinner_sdhost_info = {
     .name          = TYPE_AW_SDHOST,
     .parent        = TYPE_SYS_BUS_DEVICE,
@@ -973,6 +1003,12 @@ static const TypeInfo allwinner_sdhost_sun50i_a64_emmc_info = {
     .class_init    = allwinner_sdhost_sun50i_a64_emmc_class_init,
 };
 
+static const TypeInfo allwinner_sdhost_sun50i_h616_info = {
+    .name          = TYPE_AW_SDHOST_SUN50I_H616,
+    .parent        = TYPE_AW_SDHOST,
+    .class_init    = allwinner_sdhost_sun50i_h616_class_init,
+};
+
 static const TypeInfo allwinner_sdhost_bus_info = {
     .name = TYPE_AW_SDHOST_BUS,
     .parent = TYPE_SD_BUS,
@@ -987,6 +1023,7 @@ static void allwinner_sdhost_register_types(void)
     type_register_static(&allwinner_sdhost_sun5i_info);
     type_register_static(&allwinner_sdhost_sun50i_a64_info);
     type_register_static(&allwinner_sdhost_sun50i_a64_emmc_info);
+    type_register_static(&allwinner_sdhost_sun50i_h616_info);
     type_register_static(&allwinner_sdhost_bus_info);
 }
 

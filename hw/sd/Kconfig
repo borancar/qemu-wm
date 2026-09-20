@@ -27,3 +27,6 @@ config CADENCE_SDHCI
 config AXIADO_SDHCI
     bool
     select SDHCI
+
+config ALLWINNER_SDHOST
+    bool
